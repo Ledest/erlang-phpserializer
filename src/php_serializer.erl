@@ -2,36 +2,26 @@
 % This module is heavily inspired by Richard Jones
 % Read more here: http://www.metabrew.com/article/reading-serialized-php-objects-from-erlang
 
--module('php_serializer').
+-module(php_serializer).
+
 -export([serialize/1, unserialize/1]).
--include_lib("eunit/include/eunit.hrl").
 
+serialize(null) -> <<"N;">>;
+serialize(true) -> <<"b:1;">>;
+serialize(false) -> <<"b:0;">>;
 serialize(Item) when is_binary(Item)->
-    List = unicode:characters_to_list(Item),
-    Length = length(List),
-    <<"s:", (integer_to_binary(Length))/binary, ":", (escape_binary(Item))/binary, ";">>;
-serialize(Item) when is_float(Item)->
-    <<"d:", (float_to_binary(Item, [{decimals, 17}, compact]))/binary, ";">>;
-serialize(Item) when is_integer(Item)->
-    <<"i:", (integer_to_binary(Item))/binary, ";">>;
-serialize(null) ->
-    <<"N;">>;
-serialize(true) ->
-    <<"b:1;">>;
-serialize(false) ->
-    <<"b:0;">>;
-serialize(Item) when is_list(Item) ->
-    %% Now the fun begins!!
-    serialize(Item, <<"a:", (integer_to_binary(length(Item)))/binary, ":{">>).
+    <<"s:", (integer_to_binary(len(Item)))/binary, $:, (escape_binary(Item))/binary, $;>>;
+serialize(Item) when is_float(Item)-> <<"d:", (float_to_binary(Item, [{decimals, 17}, compact]))/binary, $;>>;
+serialize(Item) when is_integer(Item)-> <<"i:", (integer_to_binary(Item))/binary, $;>>;
+%% Now the fun begins!!
+serialize(Item) when is_list(Item) -> serialize(Item, <<"a:", (integer_to_binary(length(Item)))/binary, ":{">>);
+serialize(Item) when is_atom(Item) -> serialize(atom_to_binary(Item, latin1)).
 
-serialize([{Key, Value} | List], Acc) ->
-    Acc1 = <<Acc/binary, (serialize(Key))/binary, (serialize(Value))/binary>>,
-    serialize(List, Acc1);
-serialize([], Acc) ->
-    <<Acc/binary, "}">>.
+serialize([{Key, Value}|List], Acc) ->
+    serialize(List, <<Acc/binary, (serialize(Key))/binary, (serialize(Value))/binary>>);
+serialize([], Acc) -> <<Acc/binary, $}>>.
 
-escape_binary(Bin) ->
-    <<"\"", Bin/binary, "\"">>.
+escape_binary(Bin) -> <<$", Bin/binary, $">>.
 
 unserialize(Value) ->
     case unserialize(Value, []) of
@@ -40,56 +30,42 @@ unserialize(Value) ->
     end.
 
 unserialize(<<"a:", Rest/binary>>, Acc) ->
-    case re:split(Rest, <<"^(\\d+):{">>) of
-        [_, ArrayLengthBin, Rest1] ->
-            ArrayLength = binary_to_integer(ArrayLengthBin),
-            case unserialize(Rest1, []) of
-                {error, Reason} ->
-                    {error, Reason};
-                {ArrayElements, _} when length(ArrayElements) / 2 /= ArrayLength ->
-                    {error, "Invalid items length in array"};
-                {ArrayElements, Rest2} ->
-                    unserialize(Rest2, [make_pairs(lists:reverse(ArrayElements), []) | Acc])
+    [ArrayLengthBin, Rest1] = binary:split(Rest, <<":{">>),
+    case unserialize(Rest1, []) of
+        {error, _Reason} = Error -> Error;
+        {ArrayElements, Rest2} ->
+            case binary_to_integer(ArrayLengthBin) * 2 =:= length(ArrayElements) of
+                true -> unserialize(Rest2, [make_pairs(ArrayElements)|Acc]);
+                _false -> {error, "Invalid items length in array"}
             end
     end;
-unserialize(<<"}", Rest/binary>>, Acc) ->
-    {Acc, Rest};
+unserialize(<<$}, Rest/binary>>, Acc) -> {Acc, Rest};
 unserialize(<<"s:", Rest/binary>>, Acc) ->
-    case re:split(Rest, <<"^(\\d+):">>) of
-        [_, BinStringLength, Rest1] ->
-            case re:split(Rest1, <<"^\"(.{", BinStringLength/binary, "})\";">>) of
-                [_, String, Rest2] ->
-                    unserialize(Rest2, [String | Acc])
-            end
-    end;
-unserialize(<<"b:", Rest/binary>>, Acc) ->
-    {BinValue, Rest1} = split_binary(Rest, 2),
-    Value = case BinValue of
-        <<"1;">> -> true;
-        <<"0;">> -> false
-    end,
-    unserialize(Rest1, [Value | Acc]);
+    [BinStringLength, Rest1] = binary:split(Rest, <<$:>>),
+    [_, String, Rest2] = re:split(Rest1, <<"^\"(.{", BinStringLength/binary, "})\";">>),
+    unserialize(Rest2, [String|Acc]);
+unserialize(<<"b:0;", Rest/binary>>, Acc) -> unserialize(Rest, [false|Acc]);
+unserialize(<<"b:1;", Rest/binary>>, Acc) -> unserialize(Rest, [true|Acc]);
 unserialize(<<"i:", Rest/binary>>, Acc) ->
-    case re:split(Rest, <<"^(\\d+);">>) of
-        [_, BinaryInteger, Rest1] ->
-            unserialize(Rest1, [binary_to_integer(BinaryInteger) | Acc])
-    end;
+    [BinaryInteger, Rest1] = binary:split(Rest, <<$;>>),
+    unserialize(Rest1, [binary_to_integer(BinaryInteger)|Acc]);
 unserialize(<<"d:", Rest/binary>>, Acc) ->
-    case re:split(Rest, <<"^(\\d+(?:\.\\d+|));">>) of
-        [_, BinaryDecimal, Rest1] ->
-            unserialize(Rest1, [binary_to_float(BinaryDecimal) | Acc])
-    end;
-unserialize(<<"N;", Rest/binary>>, Acc) ->
-    unserialize(Rest, [null | Acc]);
-unserialize(<<"O:", _Rest/binary>>, _Acc) ->
-    {error, "Unserializing classes not implemented"};
-unserialize(<<>>, Acc) ->
-    {Acc, []}.
+    [BinaryDecimal, Rest1] = binary:split(Rest, <<$;>>),
+    unserialize(Rest1, [binary_to_float(BinaryDecimal) | Acc]);
+unserialize(<<"N;", Rest/binary>>, Acc) -> unserialize(Rest, [null|Acc]);
+unserialize(<<"O:", _Rest/binary>>, _Acc) -> {error, "Unserializing classes not implemented"};
+unserialize(<<>>, Acc) -> {Acc, []}.
 
-make_pairs([K, V | T], Acc) ->
-    make_pairs(T, [{K, V} | Acc]);
-make_pairs([], Acc) ->
-    lists:reverse(Acc).
+-ifdef(HAVE_string__length_1).
+len(Data) -> string:length(Data).
+-else.
+len(Data) -> length(unicode:characters_to_list(Data)).
+-endif.
+
+make_pairs(List) -> make_pairs(List, []).
+
+make_pairs([V, K|T], Acc) -> make_pairs(T, [{K, V}|Acc]);
+make_pairs([], Acc) -> Acc.
 
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
