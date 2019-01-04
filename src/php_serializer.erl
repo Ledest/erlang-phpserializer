@@ -9,10 +9,16 @@
 serialize(null) -> <<"N;">>;
 serialize(true) -> <<"b:1;">>;
 serialize(false) -> <<"b:0;">>;
-serialize(Item) when is_binary(Item)->
+serialize(Item) when is_binary(Item) ->
     <<"s:", (integer_to_binary(len(Item)))/binary, $:, (escape_binary(Item))/binary, $;>>;
-serialize(Item) when is_float(Item)-> <<"d:", (float_to_binary(Item, [{decimals, 17}, compact]))/binary, $;>>;
-serialize(Item) when is_integer(Item)-> <<"i:", (integer_to_binary(Item))/binary, $;>>;
+serialize(Item) when is_float(Item) ->
+    <<"d:",
+      (list_to_binary(lists:foldr(fun($0, "") -> "";
+                                     ($., "") -> ".0";
+                                     (E, A) -> [E|A]
+                                  end, "", lists:flatten(io_lib:format("~.17f", [Item])))))/binary,
+      $;>>;
+serialize(Item) when is_integer(Item) -> <<"i:", (integer_to_binary(Item))/binary, $;>>;
 %% Now the fun begins!!
 serialize(Item) when is_list(Item) -> serialize(Item, <<"a:", (integer_to_binary(length(Item)))/binary, ":{">>);
 serialize(Item) when is_atom(Item) -> serialize(atom_to_binary(Item, latin1)).
@@ -115,7 +121,7 @@ unserialize_test() ->
 
 serialize_test() ->
     ?assertEqual(<<"s:6:\"Foobar\";">>, serialize(<<"Foobar">>)),
-    ?assertEqual(<<"d:10.00009999999999976;">>, serialize(10.0001)),
+    ?assertEqual(<<"d:10.00009999999999977;">>, serialize(10.0001)),
     ?assertEqual(<<"N;">>, serialize(null)),
     ?assertEqual(<<"b:1;">>, serialize(true)),
     ?assertEqual(<<"b:0;">>, serialize(false)),
